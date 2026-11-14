@@ -25,9 +25,23 @@
 #   ./deploy.sh logs [n]   Tail the server's Laravel log
 #   ./deploy.sh ssh        Open a shell in the app directory
 #   ./deploy.sh artisan …  Run an artisan command on the server
-#   Flags: --dry-run (print remote script), --skip-tests, --force (allow dirty tree)
+#   ./deploy.sh check      Run the pre-deploy checks on the server (also: doctor, backup)
+#   ./deploy.sh cx …       Run any ./cx.sh command on the server
+#   Flags: --dry-run (print remote script), --skip-tests, --force (allow dirty tree),
+#          --no-backup (skip the pre-deploy DB backup)
+#
+# Deploy steps: maintenance on → update code → composer → checks (.env, APP_KEY,
+# DB reachable, APP_DEBUG off) → DB backup → migrate → cache → maintenance off.
+# Any failure reverts the code to the previous commit and brings the site back up.
 set -euo pipefail
-cd "$(dirname "$0")"
+APP_DIR=${DEPLOY_APP_DIR:-$(cd "$(dirname "$0")" && pwd)}
+# Bash reads scripts lazily, and a deploy rewrites this file via git. Run from a
+# temporary copy so the update can't corrupt the running script.
+if [ -z "${DEPLOY_APP_DIR:-}" ]; then
+  tmp=$(mktemp "${TMPDIR:-/tmp}/deploy.XXXXXX"); cp "$0" "$tmp"
+  DEPLOY_APP_DIR="$APP_DIR" DEPLOY_SELF="$0" bash "$tmp" "$@" && rc=0 || rc=$?; rm -f "$tmp"; exit $rc
+fi
+cd "$APP_DIR"
 [ -f .deploy.env ] && source .deploy.env
 
 if [ -t 1 ]; then B=$'\e[1m'; G=$'\e[32m'; Y=$'\e[33m'; R=$'\e[31m'; N=$'\e[0m'; else B= G= Y= R= N=; fi
@@ -36,10 +50,10 @@ ok()   { echo "${G}✓${N} $*"; }
 warn() { echo "${Y}!${N} $*"; }
 die()  { echo "${R}✗${N} $*" >&2; exit 1; }
 
-DRY=0 SKIP_TESTS=0 FORCE=0 ARGS=()
+DRY=0 SKIP_TESTS=0 FORCE=0 NO_BACKUP=0 ARGS=()
 for a in "$@"; do
   case "$a" in
-    --dry-run) DRY=1 ;; --skip-tests) SKIP_TESTS=1 ;; --force) FORCE=1 ;;
+    --dry-run) DRY=1 ;; --skip-tests) SKIP_TESTS=1 ;; --force) FORCE=1 ;; --no-backup) NO_BACKUP=1 ;;
     *) ARGS+=("$a") ;;
   esac
 done
@@ -100,23 +114,52 @@ case "$CMD" in
     info "Deploying ${B}$(git rev-parse --short "origin/$BRANCH")${N} to $TARGET"
     remote <<SCRIPT
 cd "$DEPLOY_PATH"
-git rev-parse HEAD > .deploy_previous
-[ -f database/database.sqlite ] && mkdir -p storage/backups && cp database/database.sqlite "storage/backups/pre-deploy-\$(date +%Y%m%d-%H%M%S).sqlite" || true
-ls -1t storage/backups/pre-deploy-* 2>/dev/null | tail -n +6 | xargs -r rm -f
-$RPHP artisan down --refresh=15 --retry=60 || true
-trap '$RPHP artisan up' EXIT
+export PHP="$RPHP" COMPOSER="$RCOMPOSER" YES=1
+step() { echo "  · \$*"; }
+prev=\$(git rev-parse HEAD)
+echo "\$prev" > .deploy_previous
+
+[ -f .env ] || { echo "✗ No .env on server — run ./deploy.sh init first"; exit 1; }
 git fetch -q origin "$BRANCH"
-git reset -q --hard "origin/$BRANCH"
-$RCOMPOSER install --no-dev --optimize-autoloader --no-interaction --quiet
-if grep -q '^DB_CONNECTION=sqlite' .env 2>/dev/null; then [ -f database/database.sqlite ] || touch database/database.sqlite; fi
-$RPHP artisan migrate --force
-$RPHP artisan optimize:clear >/dev/null
-$RPHP artisan optimize
-chmod -R ug+rwX storage bootstrap/cache
-echo "Deployed \$(git rev-parse --short HEAD) (previous \$(cut -c1-7 .deploy_previous))"
+new=\$(git rev-parse "origin/$BRANCH")
+if [ "\$prev" = "\$new" ]; then step "Already at \${new:0:7} — redeploying"; fi
+
+step "Maintenance mode on"
+\$PHP artisan down --refresh=15 --retry=60 >/dev/null || true
+trap '\$PHP artisan up >/dev/null; echo "  · Maintenance mode off"' EXIT
+
+revert() {
+  echo "✗ \$1 — reverting code to \${prev:0:7}"
+  git reset -q --hard "\$prev"
+  \$COMPOSER install --no-dev --optimize-autoloader --no-interaction --quiet || true
+  \$PHP artisan optimize >/dev/null 2>&1 || true
+  exit 1
+}
+
+step "Updating code \${prev:0:7} → \${new:0:7}"
+git reset -q --hard "\$new"
+step "Installing dependencies"
+\$COMPOSER install --no-dev --optimize-autoloader --no-interaction --quiet || revert "composer install failed"
+\$PHP artisan optimize:clear >/dev/null || true
+if grep -q '^DB_CONNECTION=sqlite' .env; then [ -f database/database.sqlite ] || touch database/database.sqlite; fi
+./cx.sh perms >/dev/null
+
+step "Pre-deploy checks"
+./cx.sh check | sed 's/^/      /' || revert "pre-deploy checks failed (fix .env/DB on the server)"
+
+if [ "$NO_BACKUP" != 1 ]; then
+  step "Backing up database"
+  ./cx.sh backup pre-deploy | sed 's/^/      /' || revert "database backup failed (use --no-backup to skip)"
+fi
+
+step "Migrating"
+\$PHP artisan migrate --force || revert "migrations failed (DB backup is in storage/backups)"
+step "Caching config/routes/views"
+\$PHP artisan optimize >/dev/null || revert "optimize failed"
+echo "✓ Deployed \${new:0:7} (previous \${prev:0:7})"
 SCRIPT
     if ! health_check; then
-      warn "Rolling back"; "$0" rollback; die "Deploy failed health check and was rolled back"
+      warn "Rolling back"; "$DEPLOY_SELF" rollback; die "Deploy failed health check and was rolled back"
     fi
     ok "Deploy complete"
     ;;
@@ -126,17 +169,18 @@ SCRIPT
     remote <<SCRIPT
 if [ ! -d "$DEPLOY_PATH/.git" ]; then git clone -q -b "$BRANCH" "$REPO" "$DEPLOY_PATH"; fi
 cd "$DEPLOY_PATH"
-$RCOMPOSER install --no-dev --optimize-autoloader --no-interaction --quiet
-if [ ! -f .env ]; then
-  cp .env.example .env
-  sed -i.bak -e 's/^APP_ENV=.*/APP_ENV=production/' -e 's/^APP_DEBUG=.*/APP_DEBUG=false/' .env && rm -f .env.bak
-  $RPHP artisan key:generate --force
+export PHP="$RPHP" COMPOSER="$RCOMPOSER" YES=1
+\$COMPOSER install --no-dev --optimize-autoloader --no-interaction --quiet
+if [ ! -f .env ]; then cp .env.example .env; \$PHP artisan key:generate --force; fi
+./cx.sh env:prod
+if grep -q '^DB_CONNECTION=sqlite' .env; then [ -f database/database.sqlite ] || touch database/database.sqlite; fi
+./cx.sh perms
+if ./cx.sh check; then
+  \$PHP artisan migrate --force && \$PHP artisan optimize
+  echo "✓ Initialised. Next: ./cx.sh google  (set GOOGLE_CLIENT_ID/SECRET), then ./deploy.sh"
+else
+  echo "! Fix the items above in $DEPLOY_PATH/.env (APP_URL, DB_*), then run ./deploy.sh"
 fi
-[ -f database/database.sqlite ] || touch database/database.sqlite
-$RPHP artisan migrate --force
-$RPHP artisan optimize
-chmod -R ug+rwX storage bootstrap/cache
-echo "Initialised. Now edit $DEPLOY_PATH/.env (APP_URL, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET) and run: ./deploy.sh artisan optimize"
 SCRIPT
     ;;
 
@@ -164,7 +208,10 @@ SCRIPT
 
   logs)     remote <<<"tail -n ${1:-100} \"$DEPLOY_PATH/storage/logs/laravel.log\"" ;;
   ssh)      [ $LOCAL -eq 1 ] && die "Already on the server"; exec ssh -t -p "$PORT" "$DEPLOY_HOST" "cd \"$DEPLOY_PATH\" && exec \$SHELL -l" ;;
+  cx|check|backup|doctor)
+            [ "$CMD" = cx ] || set -- "$CMD" "$@"
+            remote <<<"cd \"$DEPLOY_PATH\" && PHP=$RPHP COMPOSER=$RCOMPOSER ./cx.sh $(printf '%q ' "$@")" ;;
   artisan)  remote <<<"cd \"$DEPLOY_PATH\" && $RPHP artisan $(printf '%q ' "$@")" ;;
 
-  *) die "Unknown command: $CMD (deploy|init|rollback|status|logs|ssh|artisan)" ;;
+  *) die "Unknown command: $CMD (deploy|init|rollback|status|logs|ssh|artisan|cx|check|doctor|backup)" ;;
 esac
