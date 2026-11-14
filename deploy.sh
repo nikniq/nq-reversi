@@ -91,6 +91,7 @@ trap '$RPHP artisan up' EXIT
 git fetch -q origin "$BRANCH"
 git reset -q --hard "origin/$BRANCH"
 $RCOMPOSER install --no-dev --optimize-autoloader --no-interaction --quiet
+if grep -q '^DB_CONNECTION=sqlite' .env 2>/dev/null; then [ -f database/database.sqlite ] || touch database/database.sqlite; fi
 $RPHP artisan migrate --force
 $RPHP artisan optimize:clear >/dev/null
 $RPHP artisan optimize
