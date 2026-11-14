@@ -7,7 +7,7 @@
     <title>{{ config('app.name', 'Reversi') }} — Reversi</title>
     <link rel="preconnect" href="https://fonts.bunny.net">
     <link href="https://fonts.bunny.net/css?family=inter:400,500,600,800" rel="stylesheet">
-    <link rel="stylesheet" href="{{ asset('css/reversi.css') }}?v=1">
+    <link rel="stylesheet" href="{{ asset('css/reversi.css') }}?v=2">
 </head>
 <body>
 <div class="bg-orbs" aria-hidden="true"><span></span><span></span><span></span></div>
@@ -32,6 +32,18 @@
                 </select>
             </label>
         </div>
+        <nav class="account">
+            @auth
+                @if (auth()->user()->avatar)
+                    <img src="{{ auth()->user()->avatar }}" alt="" class="avatar" referrerpolicy="no-referrer">
+                @endif
+                <span class="who">{{ auth()->user()->name }}</span>
+                <form method="POST" action="{{ route('logout') }}">@csrf<button class="btn small" type="submit">Log out</button></form>
+            @else
+                <a href="{{ route('login') }}" class="btn small">Log in</a>
+                <a href="{{ route('register') }}" class="btn small primary">Sign up</a>
+            @endauth
+        </nav>
     </header>
 
     <section class="scoreboard">

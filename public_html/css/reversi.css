@@ -119,3 +119,33 @@ body {
     .board { padding: 6px; gap: 2px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* ---------- Account / Auth ---------- */
+a { color: var(--accent2); }
+.btn { text-decoration: none; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+.btn.small { padding: 7px 12px; font-size: .85rem; border-radius: 10px; }
+.account { display: flex; align-items: center; gap: 8px; width: 100%; justify-content: flex-end; }
+.account form { margin: 0; }
+.avatar { width: 28px; height: 28px; border-radius: 50%; }
+.who { font-size: .85rem; color: var(--muted); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.auth { max-width: 420px; margin: 0 auto; padding: 48px 16px; display: flex; flex-direction: column; align-items: center; gap: 20px; }
+.auth-logo { text-decoration: none; color: var(--text); }
+.auth-card { width: 100%; background: var(--panel); border: 1px solid var(--border); border-radius: 22px; padding: 28px; backdrop-filter: blur(14px); }
+.auth-card h1 { margin: 0; font-size: 1.5rem; }
+.auth-sub { color: var(--muted); margin: 6px 0 20px; }
+.btn.google { width: 100%; background: #fff; color: #1f2937; border-color: transparent; }
+.btn.google:hover { background: #f1f5f9; }
+.divider { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: .8rem; margin: 18px 0; }
+.divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+.form { display: flex; flex-direction: column; gap: 14px; }
+.form label { display: flex; flex-direction: column; gap: 6px; font-size: .85rem; color: var(--muted); }
+.form input[type=email], .form input[type=password], .form input[type=text] {
+    background: rgba(0,0,0,.25); border: 1px solid var(--border); border-radius: 10px; color: var(--text);
+    padding: 11px 12px; font: inherit; font-size: 1rem;
+}
+.form input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+.form .check { flex-direction: row; align-items: center; gap: 8px; }
+.form .btn { margin-top: 6px; }
+.alert { background: rgba(239,68,68,.15); border: 1px solid rgba(239,68,68,.4); color: #fecaca; padding: 10px 12px; border-radius: 10px; font-size: .9rem; margin-bottom: 14px; }
+.auth-foot { color: var(--muted); font-size: .9rem; }
