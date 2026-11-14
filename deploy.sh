@@ -2,8 +2,8 @@
 # deploy.sh — deploy the Reversi app to a server over SSH (git-based).
 #
 # Config: environment variables or a git-ignored .deploy.env file
-#   DEPLOY_HOST     user@host                         (required)
-#   DEPLOY_PATH     app directory on the server        (required)
+#   DEPLOY_HOST     user@host — leave unset to run ON the server itself
+#   DEPLOY_PATH     app directory on the server        (default in server mode: this dir)
 #   DEPLOY_BRANCH   branch to deploy                   (default: main)
 #   DEPLOY_PORT     SSH port                           (default: 22)
 #   DEPLOY_PHP      php binary on server               (default: php)
@@ -12,6 +12,10 @@
 #
 # The server directory must be a clone of this repo. On shared hosting, point
 # the domain's document root at $DEPLOY_PATH/public_html.
+#
+# Two ways to run:
+#   From your machine:  set DEPLOY_HOST + DEPLOY_PATH; tests run locally, then SSH deploys.
+#   On the server:      just run ./deploy.sh in the app dir; it pulls origin/$BRANCH in place.
 #
 # Usage:
 #   ./deploy.sh [deploy]   Test, push, deploy, health-check (auto-rollback on failure)
@@ -42,8 +46,12 @@ done
 set -- "${ARGS[@]+"${ARGS[@]}"}"
 CMD=${1:-deploy}; shift || true
 
-: "${DEPLOY_HOST:?Set DEPLOY_HOST (user@host) in env or .deploy.env}"
-: "${DEPLOY_PATH:?Set DEPLOY_PATH (app directory on server) in env or .deploy.env}"
+if [ -z "${DEPLOY_HOST:-}" ]; then
+  LOCAL=1; DEPLOY_PATH=${DEPLOY_PATH:-$PWD}; TARGET="this server ($DEPLOY_PATH)"
+else
+  LOCAL=0; : "${DEPLOY_PATH:?Set DEPLOY_PATH (app directory on server) in env or .deploy.env}"
+  TARGET="$DEPLOY_HOST:$DEPLOY_PATH"
+fi
 BRANCH=${DEPLOY_BRANCH:-main}
 PORT=${DEPLOY_PORT:-22}
 RPHP=${DEPLOY_PHP:-php}
@@ -52,7 +60,8 @@ REPO=$(git remote get-url origin)
 
 remote() {  # run a bash script (stdin) on the server
   local script; script=$(cat)
-  if [ $DRY -eq 1 ]; then echo "${B}# ssh -p $PORT $DEPLOY_HOST${N}"; echo "$script"; return 0; fi
+  if [ $DRY -eq 1 ]; then echo "${B}# target: $TARGET${N}"; echo "$script"; return 0; fi
+  if [ $LOCAL -eq 1 ]; then bash -s <<<"set -euo pipefail; $script"; return; fi
   ssh -p "$PORT" "$DEPLOY_HOST" "bash -s" <<<"set -euo pipefail; $script"
 }
 
@@ -69,6 +78,13 @@ health_check() {
 }
 
 preflight() {
+  if [ $LOCAL -eq 1 ]; then
+    # On the server: no dev deps/tests here, and code comes from origin.
+    if [ $FORCE -eq 0 ] && [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+      die "Server has modified tracked files (they'd be overwritten). Inspect with git status, or pass --force"
+    fi
+    return 0
+  fi
   [ "$(git rev-parse --abbrev-ref HEAD)" = "$BRANCH" ] || warn "Local branch is not $BRANCH (deploying origin/$BRANCH)"
   if [ $FORCE -eq 0 ] && [ -n "$(git status --porcelain)" ]; then
     die "Working tree has uncommitted changes (commit them or pass --force)"
@@ -80,7 +96,8 @@ preflight() {
 case "$CMD" in
   deploy)
     preflight
-    info "Deploying ${B}$(git rev-parse --short "$BRANCH")${N} to $DEPLOY_HOST:$DEPLOY_PATH"
+    [ $LOCAL -eq 1 ] && git fetch -q origin "$BRANCH"
+    info "Deploying ${B}$(git rev-parse --short "origin/$BRANCH")${N} to $TARGET"
     remote <<SCRIPT
 cd "$DEPLOY_PATH"
 git rev-parse HEAD > .deploy_previous
@@ -105,7 +122,7 @@ SCRIPT
     ;;
 
   init)
-    info "Initialising $DEPLOY_HOST:$DEPLOY_PATH from $REPO"
+    info "Initialising $TARGET from $REPO"
     remote <<SCRIPT
 if [ ! -d "$DEPLOY_PATH/.git" ]; then git clone -q -b "$BRANCH" "$REPO" "$DEPLOY_PATH"; fi
 cd "$DEPLOY_PATH"
@@ -138,7 +155,7 @@ SCRIPT
     ;;
 
   status)
-    echo "Local  $BRANCH: $(git log -1 --format='%h %s' "$BRANCH")"
+    [ $LOCAL -eq 1 ] || echo "Local  $BRANCH: $(git log -1 --format='%h %s' "$BRANCH")"
     remote <<SCRIPT
 cd "$DEPLOY_PATH"; echo "Server       : \$(git log -1 --format='%h %s (%cr)')"
 $RPHP artisan about --only=environment | sed -n '1,8p'
@@ -146,7 +163,7 @@ SCRIPT
     ;;
 
   logs)     remote <<<"tail -n ${1:-100} \"$DEPLOY_PATH/storage/logs/laravel.log\"" ;;
-  ssh)      exec ssh -t -p "$PORT" "$DEPLOY_HOST" "cd \"$DEPLOY_PATH\" && exec \$SHELL -l" ;;
+  ssh)      [ $LOCAL -eq 1 ] && die "Already on the server"; exec ssh -t -p "$PORT" "$DEPLOY_HOST" "cd \"$DEPLOY_PATH\" && exec \$SHELL -l" ;;
   artisan)  remote <<<"cd \"$DEPLOY_PATH\" && $RPHP artisan $(printf '%q ' "$@")" ;;
 
   *) die "Unknown command: $CMD (deploy|init|rollback|status|logs|ssh|artisan)" ;;

@@ -27,3 +27,4 @@ Homestead.yaml
 Thumbs.db
 .deploy.env
 /storage/backups
+.deploy_previous
