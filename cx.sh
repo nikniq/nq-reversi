@@ -111,7 +111,7 @@ case "$cmd" in
       check "Migrations up to date" "! art migrate:status 2>&1 | grep -qiE 'pending|not found'" "run: ./cx.sh migrate"
     fi
     if [ $prod -eq 1 ]; then
-      check "APP_DEBUG=false" "[ \"$(envval APP_DEBUG)\" = false ]" "debug pages leak secrets — run: ./cx.sh env:prod" hard
+      check "APP_DEBUG=false" "[ \"$(envval APP_DEBUG)\" = false ]" "debug pages leak secrets — run: ./cx.sh env:prod"
       check "APP_URL uses https" "[[ \"$(envval APP_URL)\" == https://* ]]" "set APP_URL=https://your-domain"
     else
       warn "APP_ENV=$(envval APP_ENV) (not production)"

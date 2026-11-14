@@ -25,6 +25,7 @@
 #   ./deploy.sh logs [n]   Tail the server's Laravel log
 #   ./deploy.sh ssh        Open a shell in the app directory
 #   ./deploy.sh artisan …  Run an artisan command on the server
+#   ./deploy.sh migrate    Clear config cache, run migrations, show status (no code update)
 #   ./deploy.sh check      Run the pre-deploy checks on the server (also: doctor, backup)
 #   ./deploy.sh cx …       Run any ./cx.sh command on the server
 #   Flags: --dry-run (print remote script), --skip-tests, --force (allow dirty tree),
@@ -208,10 +209,24 @@ SCRIPT
 
   logs)     remote <<<"tail -n ${1:-100} \"$DEPLOY_PATH/storage/logs/laravel.log\"" ;;
   ssh)      [ $LOCAL -eq 1 ] && die "Already on the server"; exec ssh -t -p "$PORT" "$DEPLOY_HOST" "cd \"$DEPLOY_PATH\" && exec \$SHELL -l" ;;
+  migrate)
+    info "Migrating database on $TARGET"
+    remote <<SCRIPT
+cd "$DEPLOY_PATH"
+if grep -q '^DB_CONNECTION=sqlite' .env; then [ -f database/database.sqlite ] || touch database/database.sqlite; fi
+$RPHP artisan config:clear >/dev/null
+echo "  · Database: \$(grep -E '^DB_(CONNECTION|DATABASE)=' .env | tr '\n' ' ')"
+$RPHP artisan migrate --force
+$RPHP artisan migrate:status
+$RPHP artisan optimize >/dev/null
+echo "✓ Migrations complete"
+SCRIPT
+    ;;
+
   cx|check|backup|doctor)
             [ "$CMD" = cx ] || set -- "$CMD" "$@"
             remote <<<"cd \"$DEPLOY_PATH\" && PHP=$RPHP COMPOSER=$RCOMPOSER ./cx.sh $(printf '%q ' "$@")" ;;
   artisan)  remote <<<"cd \"$DEPLOY_PATH\" && $RPHP artisan $(printf '%q ' "$@")" ;;
 
-  *) die "Unknown command: $CMD (deploy|init|rollback|status|logs|ssh|artisan|cx|check|doctor|backup)" ;;
+  *) die "Unknown command: $CMD (deploy|init|migrate|rollback|status|logs|ssh|artisan|cx|check|doctor|backup)" ;;
 esac
